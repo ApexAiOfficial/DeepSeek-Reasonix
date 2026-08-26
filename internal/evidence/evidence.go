@@ -1993,8 +1993,70 @@ func bashSegmentIsVerification(fields []string) bool {
 		return true
 	case "mvn", "mvnw", "gradle", "gradlew":
 		return len(args) > 0 && hasCommandArg(args, "test", "check", "verify")
+	case "sha256sum", "sha512sum", "sha384sum", "sha224sum", "sha1sum", "md5sum", "b2sum":
+		return checksumSegmentIsIntegrityVerification(args)
 	}
 	return false
+}
+
+// checksumSegmentIsIntegrityVerification recognizes coreutils manifest checking
+// (`sha256sum -c MANIFEST.sha256`) as a verification command.
+//
+// Cryptographic integrity checking was previously classified "opaque" purely
+// because this taxonomy had no entry for it, so a correct delivery verification
+// was rejected while `go test` was accepted. That is a coverage gap, not a
+// safety property.
+//
+// It stays narrow on purpose. A checking form must carry BOTH -c/--check and a
+// manifest operand, so bare `sha256sum file` (which computes digests and proves
+// nothing about expected values) and `sha256sum --check` with nothing to read
+// are both refused. Unknown flags fail closed rather than being assumed
+// harmless, and --tag is refused outright because it selects BSD digest output
+// rather than a check.
+//
+// Deliberately NOT added to fullVerificationArgv: an integrity check proves the
+// bytes are the intended bytes, never that the code behaves. A source-delivery
+// task that needs tests still needs tests, and that separation is what keeps a
+// checksum from becoming a universal substitute for behavioral verification.
+func checksumSegmentIsIntegrityVerification(args []string) bool {
+	checking := false
+	manifest := false
+	for _, arg := range args {
+		if arg == "--" {
+			continue
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			// "-" means stdin: there is no auditable manifest operand.
+			if arg == "-" {
+				return false
+			}
+			manifest = true
+			continue
+		}
+		name := strings.TrimLeft(arg, "-")
+		if i := strings.IndexByte(name, '='); i >= 0 {
+			name = name[:i]
+		}
+		switch strings.ToLower(name) {
+		case "c", "check":
+			checking = true
+		case "status", "quiet", "warn", "w", "strict", "ignore-missing",
+			"binary", "b", "text", "t", "zero", "z":
+			// Read-only modifiers: they change reporting, not effects.
+		case "tag":
+			// BSD-style digest emission, not a check.
+			return false
+		default:
+			if !strings.HasPrefix(arg, "--") && strings.ContainsRune(strings.ToLower(name), 'c') {
+				// Bundled short flags such as -cw.
+				checking = true
+				continue
+			}
+			// Unknown flag: fail closed rather than assume it is harmless.
+			return false
+		}
+	}
+	return checking && manifest
 }
 
 // tscSegmentIsVerification accepts only one-shot, explicit no-emit type checks.
